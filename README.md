@@ -1,4 +1,4 @@
-# Deep Clean 🧼🤖  
+# Deep Clean 
 **핸드 제스처 인식 기반 손씻은 영역 시각화 시스템**
 
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue?logo=python)](https://www.python.org/)  
