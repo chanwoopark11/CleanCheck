@@ -104,8 +104,10 @@ CleanCheck/
    └─ mobile/             # (예정) 모바일 앱 클라이언트
 ```
 
-> ![demo](docs/.../demo.gif)
-
+> [![CleanCheck 데모 영상](https://img.youtube.com/vi/여기에_영상ID_붙여넣기/maxresdefault.jpg)](https://www.youtube.com/watch?v=여기에_영상ID_붙여넣기)
+<p align="center">
+  (⬆️ 위 이미지를 클릭하면 데모 영상을 시청할 수 있습니다.)
+</p>
 ---
 
 ## 🗺️ 향후 계획 (Roadmap)
