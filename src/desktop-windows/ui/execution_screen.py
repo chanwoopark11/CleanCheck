@@ -26,7 +26,7 @@ class ExecutionScreen(customtkinter.CTkFrame): #
         self.cap = None #
         self.is_measuring = False #
 
-        self.HANDWASH_MODEL_PATH = r"models/best.pt" # YOLO 가중치 파일 경로
+        self.HANDWASH_MODEL_PATH = r"CleanCheck/src/desktop-windows/models/best.pt" # YOLO 가중치 파일 경로
         try:
             self.handwash_model = YOLO(self.HANDWASH_MODEL_PATH) #
             print("YOLO 모델이 성공적으로 로드되었습니다.") #
