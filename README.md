@@ -7,7 +7,7 @@
 
 > **CleanCheck**는 WHO 표준 6단계 손씻기 동작과 자유 손씻기 모두를 실시간으로 인식하여, 손의 세정 영역을 직관적인 색상으로 시각화해 주는 **AI 기반 손 위생 코칭 데스크톱 애플리케이션**입니다.
 
-핸드 트래킹 · 객체 탐지를 결합해 \*\*“지금 내 손이 제대로 씻기고 있는지”\*\*를 한눈에 보여 주며, 부족한 부위와 생략한 단계를 즉시 피드백합니다.
+핸드 트래킹 · 객체 탐지를 결합해 “지금 내 손이 제대로 씻기고 있는지”를 한눈에 보여 주며, 부족한 부위와 생략한 단계를 즉시 피드백합니다.
 
 ---
 
@@ -64,14 +64,13 @@
 
 ```bash
 # 1) 리포지토리 클론
-$ git clone https://github.com/<your‑username>/CleanCheck.git
+$ git clone https://github.com/chanwoopark11/CleanCheck.git
 $ cd CleanCheck
 
 # 2) 의존성 설치
 $ pip install -r requirements.txt
 
-# 3) 학습된 YOLOv8 가중치 다운로드 (예: best.pt) 후 models/ 에 배치
-#    👉 모델 다운로드 링크나 경로를 여기에 기재하세요.
+
 ```
 
 ### 3. 실행 (Usage)
@@ -105,7 +104,7 @@ CleanCheck/
    └─ mobile/             # (예정) 모바일 앱 클라이언트
 ```
 
-> **TIP**: 스크린샷(GIF)·데모 영상을 `docs/` 하위에 두고, README 내에서 `![demo](docs/.../demo.gif)` 식으로 바로 임베드하면 좋습니다.
+> ![demo](docs/.../demo.gif)
 
 ---
 
@@ -139,8 +138,8 @@ Pull Request와 Issue는 언제나 환영입니다! 
 
 | 역할                | 이름  | 연락처                                                       |
 | ----------------- | --- | --------------------------------------------------------- |
-| 프로젝트 매니저 / CV 모델링 | 홍길동 | [example1@cleancheck.dev](mailto:example1@cleancheck.dev) |
-| GUI/UX 개발         | 김다빈 | [example2@cleancheck.dev](mailto:example2@cleancheck.dev) |
-| 데이터 수집·검증         | 이지현 | [example3@cleancheck.dev](mailto:example3@cleancheck.dev) |
+| 프로젝트 매니저  | 주다빈 | [programbins@gmail.com](mailto:programbins@gmail.com) |
+| AI CV 모델링         | 최민서 | [msc503@naver.com](mailto:[msc503@naver.com) |
+| 데이터 수집·검증         | 박찬우 | [pcw22600@gmail.com](mailto:pcw22600@gmail.com) |
 
 > 궁금한 점이 있다면 언제든 메일 주세요. 프로젝트에 기여해 주셔서 감사합니다!
