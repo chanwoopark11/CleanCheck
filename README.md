@@ -19,8 +19,7 @@
 4. [프로젝트 구조](#-프로젝트-구조-project-structure)
 5. [향후 계획](#-향후-계획-roadmap)
 6. [기여하기](#-기여하기-contributing)
-7. [라이선스](#-라이선스-license)
-8. [팀 정보](#-팀-정보-team)
+7. [팀 정보](#-팀-정보-team)
 
 ---
 
@@ -128,12 +127,6 @@ Pull Request와 Issue는 언제나 환영입니다! 
 1. `dev` 브랜치에서 기능을 구현한 뒤 PR을 보내 주세요.
 2. 커밋 메시지는 **Conventional Commits** 스타일을 권장합니다.
 3. **pre‑commit** 훅(`flake8`, `isort`, `black`)이 자동으로 코드 스타일을 검사합니다.
-
----
-
-## 📄 라이선스 (License)
-
-이 프로젝트는 **MIT License**를 따릅니다. 자세한 내용은 `LICENSE` 파일을 확인하세요.
 
 ---
 
