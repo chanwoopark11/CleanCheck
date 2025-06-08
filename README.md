@@ -108,6 +108,7 @@ CleanCheck/
 <p align="center">
   (⬆️ 위 이미지를 클릭하면 데모 영상을 시청할 수 있습니다.)
 </p>
+
 ---
 
 ## 🗺️ 향후 계획 (Roadmap)
