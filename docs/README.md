@@ -1,7 +1,7 @@
 
 | 구분 | 주요 내용 | 예시 파일 |
 |------|-----------|-----------|
-| **mediapipe/** | 손 랜드마크 추적·보간 실험 캡처, Kalman 필터 비교 GIF | `img/kalman_vs_raw.gif` |
+| **mediapipe/** | 손 랜드마크 추적·보간 실험 캡처, Kalman 필터 비교 GIF | `CleanCheck/docs/mediapipe/img/holistic_보간.gif` |
 | **yolo/** | WHO 6단계 동작 분류 모델 학습 로그, confusion matrix | `Train_v1/result/val_confusion_matrix.png` |
 | **img/** | 문서에 직접 삽입할 고해상도 이미지 자산 | `yolo/img/stage3_example.jpg` |
 
