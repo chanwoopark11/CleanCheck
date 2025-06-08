@@ -1,0 +1,18 @@
+# -------------------------------------------
+# CleanCheck requirements.txt  (2025-06-08)
+# -------------------------------------------
+python>=3.9,<3.13
+
+# GUI
+customtkinter==5.2.2            # modern Tk GUI widgets :contentReference[oaicite:0]{index=0}
+pillow==11.2.1                  # ImageTk 등 이미지 처리 :contentReference[oaicite:1]{index=1}
+
+# Core CV / 수치연산
+numpy>=1.24,<2.0                # 대부분 패키지의 하위 의존
+opencv-python==4.11.0.86        # cv2·KalmanFilter 등 :contentReference[oaicite:2]{index=2}
+mediapipe==0.10.21              # 손/포즈 랜드마크 추적 :contentReference[oaicite:3]{index=3}
+
+# 딥러닝 (YOLOv8)
+torch==2.7.0                    # CPU 빌드; GPU 사용 시 설치 커맨드 수정 필요 :contentReference[oaicite:4]{index=4}
+torchvision==0.22.1             # 모델·변환 유틸 :contentReference[oaicite:5]{index=5}
+ultralytics==8.3.152            # YOLOv8 엔진 (detect/pose/seg) :contentReference[oaicite:6]{index=6}
