@@ -1,0 +1,108 @@
+###############################################################################
+# CleanCheck .gitignore
+#  - Python(3.10+) 데스크톱 앱 + YOLOv8 학습 결과 + MediaPipe 실험 로그용
+#  - Windows 개발 툴·IDE(VC++, VS Code)·운영체제 잡파일까지 포함
+###############################################################################
+
+#####################
+# Python & 패키지 빌드
+#####################
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.egg
+*.egg-info/
+build/
+dist/
+pip-wheel-metadata/
+site/
+# 가상환경
+.venv*/
+venv*/
+env*/
+ENV*/
+
+#####################
+# 환경 변수 / 시크릿
+#####################
+.env
+.env.*        # .env.dev, .env.production 등
+*.secret
+token.json
+
+#####################
+# 데이터·모델 중간 산출물
+#####################
+# YOLOv8 훈련 결과
+runs/
+exp*/
+*.pt
+*.onnx
+*.tflite
+*.weights
+
+# MediaPipe / Kalman 실험 로그
+experiments/**/result/
+experiments/**/output/
+experiments/**/logs/
+
+# 대용량 원본 데이터셋(직접 다운받아 쓰도록 유도)
+datasets/
+data/
+*.zip
+*.tar
+*.tar.gz
+*.7z
+
+#####################
+# 시각화·리포트 산출물
+#####################
+reports/
+*.csv
+*.xlsx
+*.pdf
+*.mp4
+*.avi
+*.gif
+
+#####################
+# IDE / 편집기 설정
+#####################
+# VS Code
+.vscode/
+*.code-workspace
+# PyCharm / IntelliJ
+.idea/
+*.iml
+# Visual Studio
+.vs/
+*.vcxproj*
+*.sln
+*.suo
+*.VC.db
+# 기타
+*.swp
+*.swo
+
+#####################
+# 플랫폼/OS별 잡파일
+#####################
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+
+#####################
+# Windows 실행 파일
+#####################
+*.exe
+*.dll
+*.bat
+*.msi
+
+#####################
+# macOS / Linux 권한 스크립트 백업
+#####################
+*.backup
+*~
