@@ -1,8 +1,3 @@
-좋습니다! 아래는 기존에 작성해주신 `README.md` 내용에 **`📘 인덱스 문서` 섹션을 자연스럽게 추가한 버전**입니다. 전체적인 톤과 구성은 그대로 유지하면서, `index.md`를 **목차와 하단에 모두 노출**시켜 사용자 접근성을 높였습니다.
-
----
-
-````markdown
 # 🧼 CleanCheck: 핸드 제스쳐 인식 기반 손씻기 영역 시각화 시스템
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue?logo=python)](https://www.python.org/)
@@ -24,7 +19,6 @@
 5. [향후 계획](#-향후-계획-roadmap)
 6. [기여하기](#-기여하기-contributing)
 7. [팀 정보](#-팀-정보-team)
-8. [📘 인덱스 문서](index.md)
 
 ---
 
@@ -73,7 +67,9 @@ $ cd CleanCheck
 
 # 2) 의존성 설치
 $ pip install -r requirements.txt
-````
+
+
+```
 
 ### 3. 실행 (Usage)
 
@@ -107,7 +103,6 @@ CleanCheck/
 ```
 
 > [![CleanCheck 데모 영상](docs/mediapipe/img/demo.png)](https://youtu.be/GN2RJRM0xCs)
-
 <p align="center">
   (⬆️ 위 이미지를 클릭하면 데모 영상을 시청할 수 있습니다.)
 </p>
@@ -136,16 +131,10 @@ Pull Request와 Issue는 언제나 환영입니다! 
 
 ## 🧑‍💻 팀 정보 (Team)
 
-| 역할        | 이름  | 연락처                                                   |
-| --------- | --- | ----------------------------------------------------- |
+| 역할                | 이름  | 연락처                                                       |
+| ----------------- | --- | --------------------------------------------------------- |
 | 프로젝트 매니저  | 주다빈 | [programbins@gmail.com](mailto:programbins@gmail.com) |
-| AI CV 모델링 | 최민서 | [msc503@naver.com](mailto:msc503@naver.com)           |
-| 데이터 수집·검증 | 박찬우 | [pcw22600@gmail.com](mailto:pcw22600@gmail.com)       |
+| AI CV 모델링         | 최민서 | [msc503@naver.com](mailto:[msc503@naver.com) |
+| 데이터 수집·검증         | 박찬우 | [pcw22600@gmail.com](mailto:pcw22600@gmail.com) |
 
----
-
-## 📘 추가 문서
-
-* 🔗 [📂 전체 인덱스 보기 (index.md)](index.md) – CleanCheck 구조 및 문서 요약 모음
-
-```
+> 궁금한 점이 있다면 언제든 메일 주세요. 프로젝트에 기여해 주셔서 감사합니다!
