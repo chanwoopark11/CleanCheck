@@ -1,4 +1,4 @@
-# 🧼 CleanCheck: 핸드 제스쳐 인식 기반 손씻기 영역 시각화 시스템
+# 🧼 CleanCheck: 핸드 제스쳐 인식 기반 손씻은 영역 시각화 시스템
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue?logo=python)](https://www.python.org/)
 [![YOLOv8](https://img.shields.io/badge/YOLO-v8-orange)](https://github.com/ultralytics/ultralytics)
