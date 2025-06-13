@@ -126,7 +126,7 @@ Pull Request와 Issue는 언제나 환영입니다!
 
 1. `dev` 브랜치에서 기능을 구현한 뒤 PR을 보내 주세요.
 2. 커밋 메시지는 **Conventional Commits** 스타일을 권장합니다.
-3. **pre‑commit** 훅(`flake8`, `isort`, `black`)이 자동으로 코드 스타일을 검사합니다.
+3. **pre‑commit** 훅(`flake8`, `isort`, `black`)이 자동으로 코드 스타일을 검사합니다
 
 ---
 
@@ -138,4 +138,4 @@ Pull Request와 Issue는 언제나 환영입니다!
 | AI CV 모델링     | 최민서 | [msc503@naver.com](mailto:[msc503@naver.com)          |
 | 데이터 수집·검증 | 박찬우 | [pcw22600@gmail.com](mailto:pcw22600@gmail.com)       |
 
-> 궁금한 점이 있다면 언제든 메일 주세요. 프로젝트에 기여해 주셔서 감사합니다!!
+> 궁금한 점이 있다면 언제든 메일 주세요. 프로젝트에 기여해 주셔서 감사합니다!
