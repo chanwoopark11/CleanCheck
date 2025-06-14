@@ -1,0 +1,225 @@
+import cv2
+import mediapipe as mp
+import numpy as np
+import time
+from ultralytics import YOLO
+
+# =================================================================================
+# 1. 설정 및 상수
+# =================================================================================
+YOLO_MODEL_PATH = r"D:\Download\best (2).pt"
+YOLO_CONF_THRESHOLD = 0.6
+CONTACT_TIME_THRESHOLD = 0.5
+UNWASHED_COLOR = (0, 0, 255)
+PALM_WASHED_COLOR = (0, 255, 0)
+BACK_WASHED_COLOR = (255, 165, 0)
+TEXT_COLOR = (255, 255, 255)
+ORIENTATION_CONFIRM_FRAMES = 5
+
+# [속도 개선] YOLO 연산을 몇 프레임마다 한 번씩 실행할지 결정합니다. (값이 클수록 빠르지만 반응은 느려짐)
+YOLO_INFERENCE_INTERVAL = 3
+
+# (유틸리티, 상태 관리, 시각화 함수 등은 이전과 동일하여 지면상 생략)
+# ...
+# =================================================================================
+# 2. 유틸리티 및 핵심 로직 함수
+# =================================================================================
+def estimate_palm_direction(landmarks, label):
+    if not landmarks or not (0 in landmarks and 5 in landmarks and 17 in landmarks): return True
+    wrist, index_mcp, pinky_mcp = np.array(landmarks[0]), np.array(landmarks[5]), np.array(landmarks[17])
+    v1, v2 = index_mcp - wrist, pinky_mcp - wrist
+    normal = np.cross(np.append(v1, 0), np.append(v2, 0))
+    return normal[2] < 0 if label == "Left" else normal[2] > 0
+def create_kalman_filter(x, y):
+    kf = cv2.KalmanFilter(4, 2); kf.transitionMatrix = np.array([[1, 0, 1, 0], [0, 1, 0, 1], [0, 0, 1, 0], [0, 0, 0, 1]], np.float32); kf.measurementMatrix = np.eye(2, 4, dtype=np.float32); kf.processNoiseCov = np.eye(4, dtype=np.float32) * 0.03; kf.measurementNoiseCov = np.eye(2, dtype=np.float32) * 0.5; kf.statePost = np.array([[x], [y], [0], [0]], dtype=np.float32); return kf
+def update_kalman_filters(kalman_dict, detection):
+    predicted = {}
+    if detection:
+        for idx, (cx, cy) in detection.items():
+            if idx not in kalman_dict: kalman_dict[idx] = create_kalman_filter(cx, cy)
+            kf = kalman_dict[idx]; kf.predict(); kf.correct(np.array([[np.float32(cx)], [np.float32(cy)]])); predicted[idx] = (int(kf.statePost[0]), int(kf.statePost[1]))
+    return predicted
+cleansed_state, contact_timers = {}, {}
+stable_orientations, orientation_counters = {}, {}
+def reset_wash_status():
+    global cleansed_state, contact_timers, stable_orientations, orientation_counters
+    cleansed_state = {"Left": {"palm": [False]*21, "back": [False]*21}, "Right": {"palm": [False]*21, "back": [False]*21}}
+    contact_timers = {"Left": {"palm": [0]*21, "back": [0]*21}, "Right": {"palm": [0]*21, "back": [0]*21}}
+    stable_orientations = {"Left": "palm", "Right": "palm"}
+    orientation_counters = {"Left": 0, "Right": 0}
+def update_cleansed_status(pred_left, pred_right, facing_left_is_palm, facing_right_is_palm, current_action):
+    now = time.time()
+    if not pred_left or not pred_right:
+        for i in range(21):
+            for hand in ["Left", "Right"]:
+                for side in ["palm", "back"]: contact_timers[hand][side][i] = 0
+        return
+    left_points = np.array(list(pred_left.values()), dtype=np.int32)
+    right_points = np.array(list(pred_right.values()), dtype=np.int32)
+    left_hull = cv2.convexHull(left_points) if len(left_points) >= 3 else None
+    right_hull = cv2.convexHull(right_points) if len(right_points) >= 3 else None
+    if left_hull is None or right_hull is None: return
+    if current_action == 0 or current_action == 1:
+        for i, point_left in pred_left.items():
+            is_in_contact = cv2.pointPolygonTest(right_hull, point_left, False) >= 0
+            if is_in_contact:
+                if contact_timers["Left"]["palm"][i] == 0: contact_timers["Left"]["palm"][i] = now
+                if now - contact_timers["Left"]["palm"][i] > CONTACT_TIME_THRESHOLD: cleansed_state["Left"]["palm"][i] = True
+            else: contact_timers["Left"]["palm"][i] = 0
+            contact_timers["Left"]["back"][i] = 0
+        for i, point_right in pred_right.items():
+            is_in_contact = cv2.pointPolygonTest(left_hull, point_right, False) >= 0
+            if is_in_contact:
+                if contact_timers["Right"]["palm"][i] == 0: contact_timers["Right"]["palm"][i] = now
+                if now - contact_timers["Right"]["palm"][i] > CONTACT_TIME_THRESHOLD: cleansed_state["Right"]["palm"][i] = True
+            else: contact_timers["Right"]["palm"][i] = 0
+            contact_timers["Right"]["back"][i] = 0
+    else:
+        side_left, opposite_side_left = ("palm", "back") if facing_left_is_palm else ("back", "palm")
+        side_right, opposite_side_right = ("palm", "back") if facing_right_is_palm else ("back", "palm")
+        for i, point_left in pred_left.items():
+            is_in_contact = cv2.pointPolygonTest(right_hull, point_left, False) >= 0
+            if is_in_contact:
+                if contact_timers["Left"][side_left][i] == 0: contact_timers["Left"][side_left][i] = now
+                contact_timers["Left"][opposite_side_left][i] = 0
+                if now - contact_timers["Left"][side_left][i] > CONTACT_TIME_THRESHOLD: cleansed_state["Left"][side_left][i] = True
+            else: contact_timers["Left"]["palm"][i] = 0; contact_timers["Left"]["back"][i] = 0
+        for i, point_right in pred_right.items():
+            is_in_contact = cv2.pointPolygonTest(left_hull, point_right, False) >= 0
+            if is_in_contact:
+                if contact_timers["Right"][side_right][i] == 0: contact_timers["Right"][side_right][i] = now
+                contact_timers["Right"][opposite_side_right][i] = 0
+                if now - contact_timers["Right"][side_right][i] > CONTACT_TIME_THRESHOLD: cleansed_state["Right"][side_right][i] = True
+            else: contact_timers["Right"]["palm"][i] = 0; contact_timers["Right"]["back"][i] = 0
+def draw_hand_visuals(image, landmarks, label, is_palm):
+    # [수정] 함수 시작 시 hull_points를 먼저 정의하여 오류를 해결합니다.
+    if not landmarks:
+        return
+
+    overlay = image.copy()
+    # 이 라인이 if문 바깥에 있어 항상 실행되도록 보장합니다.
+    hull_points = [landmarks[i] for i in range(21) if i in landmarks]
+    side = "palm" if is_palm else "back"
+
+    # 이제 hull_points 변수는 항상 존재하므로 len() 함수에서 오류가 나지 않습니다.
+    if len(hull_points) > 2:
+        hull = cv2.convexHull(np.array(hull_points, dtype=np.int32))
+        
+        # cleansed_state에 label과 side 키가 있는지 확인 후 안전하게 접근
+        if label in cleansed_state and side in cleansed_state[label]:
+            washed_count = sum(1 for i in range(21) if cleansed_state[label][side][i])
+            wash_ratio = washed_count / 21
+            if wash_ratio > 0.1:
+                color = PALM_WASHED_COLOR if is_palm else BACK_WASHED_COLOR
+                alpha = min(0.1 + wash_ratio * 0.6, 0.7)
+                cv2.fillConvexPoly(overlay, hull, color)
+                cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0, image)
+
+    # 랜드마크 그리기 및 텍스트 표시 로직
+    if label in cleansed_state and side in cleansed_state[label]:
+        for i, point in landmarks.items():
+            color = (PALM_WASHED_COLOR if is_palm else BACK_WASHED_COLOR) if cleansed_state[label][side][i] else UNWASHED_COLOR
+            cv2.circle(image, point, 8, color, -1)
+            cv2.circle(image, point, 8, (0, 0, 0), 1)
+
+    if 0 in landmarks:
+        label_text = f"{label} - {side.capitalize()}"
+        cv2.putText(image, label_text, (landmarks[0][0] - 50, landmarks[0][1] + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, TEXT_COLOR, 2)
+def draw_progress_bar(image, current_action):
+    total_points = 84; washed_points = sum(sum(side) for hand in cleansed_state.values() for side in hand.values()); progress = washed_points / total_points if total_points > 0 else 0; bar_width = int((image.shape[1] - 40) * progress); cv2.rectangle(image, (20, 20), (image.shape[1] - 20, 50), (100, 100, 100), -1);
+    if bar_width > 0: cv2.rectangle(image, (20, 20), (20 + bar_width, 50), (0, 255, 127), -1)
+    cv2.putText(image, f"Wash Progress: {progress:.0%}", (30, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_COLOR, 2); cv2.putText(image, "Press 'r' to Reset", (image.shape[1] - 180, image.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    action_text = "Action: Palm to Palm" if current_action in [0, 1] else "Action: N/A"
+    cv2.putText(image, action_text, (20, image.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+# =================================================================================
+# 3. 메인 애플리케이션
+# =================================================================================
+def main():
+    try:
+        model = YOLO(YOLO_MODEL_PATH)
+    except Exception as e:
+        print(f"Error loading YOLO model: {e}"); print(f"Please check if the model path '{YOLO_MODEL_PATH}' is correct and 'ultralytics' is installed."); return
+
+    mp_hands = mp.solutions.hands
+    hands = mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+    cap = cv2.VideoCapture(0)
+    
+    kalman_left, kalman_right = {}, {}
+    last_known_landmarks = {"Left": None, "Right": None}
+    reset_wash_status()
+
+    # [속도 개선] 프레임 카운터와 현재 동작 상태 변수 초기화
+    frame_counter = 0
+    current_detected_action = -1
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret: break
+        frame = cv2.flip(frame, 1)
+        image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, _ = frame.shape
+
+        # [속도 개선] N 프레임마다 한 번씩만 YOLO 동작 인식 수행
+        if frame_counter % YOLO_INFERENCE_INTERVAL == 0:
+            yolo_results = model(frame, verbose=False)
+            
+            # 이전 프레임의 결과를 유지하기 위해, 일단 초기화
+            action_this_frame = -1 
+            if yolo_results[0].boxes:
+                boxes = yolo_results[0].boxes
+                if len(boxes) > 0:
+                    best_box = max(boxes, key=lambda box: box.conf[0])
+                    if best_box.conf[0] > YOLO_CONF_THRESHOLD:
+                        detected_class = int(best_box.cls[0])
+                        if detected_class == 0 or detected_class == 1:
+                            action_this_frame = detected_class
+            # 현재 프레임의 결과를 최종 상태 변수에 업데이트
+            current_detected_action = action_this_frame
+        
+        # --- MediaPipe 손 추적 (매 프레임 실행) ---
+        hands_results = hands.process(image_rgb)
+        detected_hands = {"Left": None, "Right": None}
+        if hands_results.multi_hand_landmarks:
+            for i, hand_landmarks in enumerate(hands_results.multi_hand_landmarks):
+                label = hands_results.multi_handedness[i].classification[0].label
+                landmarks = {idx: (int(lm.x * w), int(lm.y * h)) for idx, lm in enumerate(hand_landmarks.landmark)}
+                detected_hands[label] = landmarks
+                raw_orientation_is_palm = estimate_palm_direction(landmarks, label)
+                is_stable_palm = (stable_orientations[label] == "palm")
+                if raw_orientation_is_palm == is_stable_palm: orientation_counters[label] = 0
+                else: orientation_counters[label] += 1
+                if orientation_counters[label] > ORIENTATION_CONFIRM_FRAMES:
+                    stable_orientations[label] = "palm" if raw_orientation_is_palm else "back"; orientation_counters[label] = 0
+
+        predicted_left = update_kalman_filters(kalman_left, detected_hands["Left"])
+        predicted_right = update_kalman_filters(kalman_right, detected_hands["Right"])
+        if predicted_left: last_known_landmarks["Left"] = predicted_left
+        if predicted_right: last_known_landmarks["Right"] = predicted_right
+        
+        final_facing_left = (stable_orientations["Left"] == "palm")
+        final_facing_right = (stable_orientations["Right"] == "palm")
+
+        # --- 로직 실행 및 시각화 ---
+        update_cleansed_status(last_known_landmarks["Left"], last_known_landmarks["Right"], final_facing_left, final_facing_right, current_detected_action)
+        draw_hand_visuals(frame, last_known_landmarks["Left"], "Left", final_facing_left)
+        draw_hand_visuals(frame, last_known_landmarks["Right"], "Right", final_facing_right)
+        draw_progress_bar(frame, current_detected_action)
+
+        cv2.imshow("Hand Wash Visualizer (Optimized)", frame)
+
+        # [속도 개선] 프레임 카운터 증가
+        frame_counter += 1
+
+        key = cv2.waitKey(5) & 0xFF
+        if key == ord('q'): break
+        if key == ord('r'):
+            reset_wash_status()
+            frame_counter = 0 # 리셋 시 카운터도 초기화
+
+    cap.release()
+    hands.close()
+    cv2.destroyAllWindows()
+
+if __name__ == '__main__':
+    main()
