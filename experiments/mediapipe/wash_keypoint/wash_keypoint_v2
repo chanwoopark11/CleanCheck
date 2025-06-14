@@ -1,0 +1,241 @@
+import cv2
+import mediapipe as mp
+import numpy as np
+import time
+
+# =================================================================================
+# 1. 설정 및 상수
+# =================================================================================
+CONTACT_TIME_THRESHOLD = 0.5  # 세척으로 인정하기까지 필요한 최소 접촉 시간 (초)
+UNWASHED_COLOR = (0, 0, 255)       # 빨강 (아직 안 닦임)
+PALM_WASHED_COLOR = (0, 255, 0)     # 초록 (손바닥 닦임)
+BACK_WASHED_COLOR = (255, 165, 0)   # 파랑 (손등 닦임)
+TEXT_COLOR = (255, 255, 255)        # 흰색
+ORIENTATION_CONFIRM_FRAMES = 5    # 방향 전환을 확정하기까지 필요한 프레임 수
+
+# =================================================================================
+# 2. 유틸리티 및 핵심 로직 함수
+# =================================================================================
+
+def distance(pt1, pt2):
+    """ 두 점 사이의 유클리드 거리를 계산합니다. (현재 사용 안함) """
+    return np.sqrt((pt1[0] - pt2[0])**2 + (pt1[1] - pt2[1])**2)
+
+def estimate_palm_direction(landmarks, label):
+    """ 2D 화면 좌표의 벡터 외적을 이용해 손바닥/손등을 구분합니다. """
+    if not landmarks or not (0 in landmarks and 5 in landmarks and 17 in landmarks):
+        return True  # 랜드마크 없으면 기본값(손바닥)으로 처리
+        
+    wrist = np.array(landmarks[0])
+    index_mcp = np.array(landmarks[5])
+    pinky_mcp = np.array(landmarks[17])
+    
+    v1 = index_mcp - wrist
+    v2 = pinky_mcp - wrist
+    
+    normal = np.cross(np.append(v1, 0), np.append(v2, 0))
+    z = normal[2]
+    
+    return z < 0 if label == "Left" else z > 0
+
+def create_kalman_filter(x, y):
+    """ 칼만 필터를 생성하고 초기화합니다. """
+    kf = cv2.KalmanFilter(4, 2)
+    kf.transitionMatrix = np.array([[1, 0, 1, 0], [0, 1, 0, 1], [0, 0, 1, 0], [0, 0, 0, 1]], np.float32)
+    kf.measurementMatrix = np.eye(2, 4, dtype=np.float32)
+    kf.processNoiseCov = np.eye(4, dtype=np.float32) * 0.03
+    kf.measurementNoiseCov = np.eye(2, dtype=np.float32) * 0.5
+    kf.statePost = np.array([[x], [y], [0], [0]], dtype=np.float32)
+    return kf
+
+def update_kalman_filters(kalman_dict, detection):
+    """ 감지된 랜드마크로 칼만 필터를 업데이트하여 좌표를 부드럽게 만듭니다. """
+    predicted = {}
+    if detection:
+        for idx, (cx, cy) in detection.items():
+            if idx not in kalman_dict:
+                kalman_dict[idx] = create_kalman_filter(cx, cy)
+            kf = kalman_dict[idx]
+            kf.predict()
+            kf.correct(np.array([[np.float32(cx)], [np.float32(cy)]]))
+            predicted[idx] = (int(kf.statePost[0]), int(kf.statePost[1]))
+    return predicted
+
+# --- 상태 관리 변수 ---
+cleansed_state, contact_timers = {}, {}
+stable_orientations, orientation_counters = {}, {}
+
+def reset_wash_status():
+    """ 모든 세척 상태와 관련 변수들을 초기화합니다. """
+    global cleansed_state, contact_timers, stable_orientations, orientation_counters
+    cleansed_state = {"Left": {"palm": [False]*21, "back": [False]*21}, "Right": {"palm": [False]*21, "back": [False]*21}}
+    contact_timers = {"Left": {"palm": [0]*21, "back": [0]*21}, "Right": {"palm": [0]*21, "back": [0]*21}}
+    stable_orientations = {"Left": "palm", "Right": "palm"}
+    orientation_counters = {"Left": 0, "Right": 0}
+
+# [핵심] '영역 기반 접촉 감지' 로직이 적용된 함수
+def update_cleansed_status(pred_left, pred_right, facing_left_is_palm, facing_right_is_palm):
+    """ 한 손의 점이 다른 손의 영역 안에 들어왔는지 검사하여 세척 상태를 업데이트합니다. """
+    now = time.time()
+    
+    # 1. 양손 중 하나라도 없으면 모든 타이머를 리셋하고 종료
+    if not pred_left or not pred_right:
+        for i in range(21):
+            for hand in ["Left", "Right"]:
+                for side in ["palm", "back"]:
+                    contact_timers[hand][side][i] = 0
+        return
+        
+    # 2. 각 손의 외곽선으로 다각형(convex hull) 영역 생성
+    left_points = np.array(list(pred_left.values()), dtype=np.int32)
+    right_points = np.array(list(pred_right.values()), dtype=np.int32)
+    
+    left_hull = cv2.convexHull(left_points) if len(left_points) >= 3 else None
+    right_hull = cv2.convexHull(right_points) if len(right_points) >= 3 else None
+
+    # 3. 각 손의 방향 결정
+    side_left, opposite_side_left = ("palm", "back") if facing_left_is_palm else ("back", "palm")
+    side_right, opposite_side_right = ("palm", "back") if facing_right_is_palm else ("back", "palm")
+
+    # 4. 왼손의 각 점이 오른손 영역에 닿았는지 검사
+    if right_hull is not None:
+        for i, point_left in pred_left.items():
+            is_in_contact = cv2.pointPolygonTest(right_hull, point_left, False) >= 0
+            
+            if is_in_contact:
+                if contact_timers["Left"][side_left][i] == 0: contact_timers["Left"][side_left][i] = now
+                contact_timers["Left"][opposite_side_left][i] = 0
+                if now - contact_timers["Left"][side_left][i] > CONTACT_TIME_THRESHOLD:
+                    cleansed_state["Left"][side_left][i] = True
+            else:
+                contact_timers["Left"]["palm"][i] = 0
+                contact_timers["Left"]["back"][i] = 0
+                
+    # 5. 오른손의 각 점이 왼손 영역에 닿았는지 검사
+    if left_hull is not None:
+        for i, point_right in pred_right.items():
+            is_in_contact = cv2.pointPolygonTest(left_hull, point_right, False) >= 0
+            
+            if is_in_contact:
+                if contact_timers["Right"][side_right][i] == 0: contact_timers["Right"][side_right][i] = now
+                contact_timers["Right"][opposite_side_right][i] = 0
+                if now - contact_timers["Right"][side_right][i] > CONTACT_TIME_THRESHOLD:
+                    cleansed_state["Right"][side_right][i] = True
+            else:
+                contact_timers["Right"]["palm"][i] = 0
+                contact_timers["Right"]["back"][i] = 0
+
+# --- 시각화 함수 ---
+def draw_hand_visuals(image, landmarks, label, is_palm):
+    if not landmarks: return
+    overlay = image.copy()
+    hull_points = [landmarks[i] for i in range(21) if i in landmarks]
+    side = "palm" if is_palm else "back"
+
+    if len(hull_points) > 2:
+        hull = cv2.convexHull(np.array(hull_points, dtype=np.int32))
+        washed_count = sum(1 for i in range(21) if cleansed_state[label][side][i])
+        wash_ratio = washed_count / 21
+        if wash_ratio > 0.1:
+            color = PALM_WASHED_COLOR if is_palm else BACK_WASHED_COLOR
+            alpha = min(0.1 + wash_ratio * 0.6, 0.7)
+            cv2.fillConvexPoly(overlay, hull, color)
+            cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0, image)
+
+    for i, point in landmarks.items():
+        color = (PALM_WASHED_COLOR if is_palm else BACK_WASHED_COLOR) if cleansed_state[label][side][i] else UNWASHED_COLOR
+        cv2.circle(image, point, 8, color, -1)
+        cv2.circle(image, point, 8, (0,0,0), 1)
+
+    if 0 in landmarks:
+        label_text = f"{label} - {side.capitalize()}"
+        cv2.putText(image, label_text, (landmarks[0][0] - 50, landmarks[0][1] + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, TEXT_COLOR, 2)
+
+def draw_progress_bar(image):
+    total_points = 84
+    washed_points = sum(sum(side) for hand in cleansed_state.values() for side in hand.values())
+    progress = washed_points / total_points if total_points > 0 else 0
+    bar_width = int((image.shape[1] - 40) * progress)
+    cv2.rectangle(image, (20, 20), (image.shape[1] - 20, 50), (100, 100, 100), -1)
+    if bar_width > 0:
+        cv2.rectangle(image, (20, 20), (20 + bar_width, 50), (0, 255, 127), -1)
+    cv2.putText(image, f"Wash Progress: {progress:.0%}", (30, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_COLOR, 2)
+    cv2.putText(image, "Press 'r' to Reset", (image.shape[1] - 180, image.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+
+# =================================================================================
+# 3. 메인 애플리케이션
+# =================================================================================
+def main():
+    mp_hands = mp.solutions.hands
+    hands = mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+    cap = cv2.VideoCapture(0)
+    
+    kalman_left, kalman_right = {}, {}
+    last_known_landmarks = {"Left": None, "Right": None}
+    reset_wash_status()
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret: break
+        frame = cv2.flip(frame, 1)
+        image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        h, w, _ = frame.shape
+
+        hands_results = hands.process(image_rgb)
+        
+        detected_hands = {"Left": None, "Right": None}
+
+        if hands_results.multi_hand_landmarks:
+            for i, hand_landmarks in enumerate(hands_results.multi_hand_landmarks):
+                label = hands_results.multi_handedness[i].classification[0].label
+                landmarks = {idx: (int(lm.x * w), int(lm.y * h)) for idx, lm in enumerate(hand_landmarks.landmark)}
+                detected_hands[label] = landmarks
+                
+                # 시간적 필터링 로직
+                raw_orientation_is_palm = estimate_palm_direction(landmarks, label)
+                is_stable_palm = (stable_orientations[label] == "palm")
+                if raw_orientation_is_palm == is_stable_palm:
+                    orientation_counters[label] = 0
+                else:
+                    orientation_counters[label] += 1
+                if orientation_counters[label] > ORIENTATION_CONFIRM_FRAMES:
+                    stable_orientations[label] = "palm" if raw_orientation_is_palm else "back"
+                    orientation_counters[label] = 0
+
+        # 칼만 필터로 좌표 스무딩
+        predicted_left = update_kalman_filters(kalman_left, detected_hands["Left"])
+        predicted_right = update_kalman_filters(kalman_right, detected_hands["Right"])
+        
+        # 마지막으로 알려진 위치 업데이트 (시각화 끊김 방지)
+        if predicted_left: last_known_landmarks["Left"] = predicted_left
+        if predicted_right: last_known_landmarks["Right"] = predicted_right
+        
+        # 최종 로직에는 '확정된' 방향인 stable_orientations 값을 사용
+        final_facing_left = (stable_orientations["Left"] == "palm")
+        final_facing_right = (stable_orientations["Right"] == "palm")
+
+        # 핵심 로직 실행
+        update_cleansed_status(last_known_landmarks["Left"], last_known_landmarks["Right"], final_facing_left, final_facing_right)
+        draw_hand_visuals(frame, last_known_landmarks["Left"], "Left", final_facing_left)
+        draw_hand_visuals(frame, last_known_landmarks["Right"], "Right", final_facing_right)
+        draw_progress_bar(frame)
+
+        cv2.imshow("Hand Wash Visualizer (Area-Based Contact)", frame)
+
+        # 키 입력 처리
+        key = cv2.waitKey(5) & 0xFF
+        if key == ord('q'):
+            break
+        if key == ord('r'):
+            reset_wash_status()
+            kalman_left, kalman_right = {}, {}
+            last_known_landmarks = {"Left": None, "Right": None}
+
+    # 종료
+    cap.release()
+    hands.close()
+    cv2.destroyAllWindows()
+
+if __name__ == '__main__':
+    main()
