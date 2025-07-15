@@ -2,14 +2,12 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import time
-# from collections import deque # deque는 이제 사용하지 않으므로 주석 처리하거나 제거합니다.
 from ultralytics import YOLO
 
 # =================================================================================
 # 1. 설정 및 상수
 # =================================================================================
 YOLO_MODEL_PATH = r"D:\Download\best (2).pt" # YOLO 모델 파일 경로를 설정하세요.
-# YOLO_CONF_THRESHOLD = 0.6  # 신뢰도 임계값은 제거되었으므로 더 이상 사용되지 않습니다.
 CONTACT_TIME_THRESHOLD = 0.5 # 손이 접촉 상태로 유지되어야 하는 최소 시간 (초)
 UNWASHED_COLOR = (0, 0, 255) # 세척되지 않은 랜드마크 색상 (파랑)
 PALM_WASHED_COLOR = (0, 255, 0) # 손바닥 세척 완료 랜드마크 색상 (초록)
@@ -18,12 +16,9 @@ TEXT_COLOR = (255, 255, 255) # 텍스트 색상 (흰색)
 ORIENTATION_CONFIRM_FRAMES = 5 # 손 방향(손바닥/손등)이 안정적으로 감지되기 위한 프레임 수
 
 # [속도 개선] YOLO 연산을 몇 프레임마다 한 번씩 실행할지 결정합니다. (값이 클수록 빠르지만 반응은 느려짐)
-YOLO_INFERENCE_INTERVAL = 3
+YOLO_INFERENCE_INTERVAL = 2
 
-# --- YOLO 동작 감지 안정화를 위한 버퍼링 설정 (제거됨) ---
-# YOLO_ACTION_BUFFER_SIZE = 5
-# YOLO_ACTION_MAJORITY_THRESHOLD = 3
-# --------------------------------------------------------
+
 
 # =================================================================================
 # 2. 유틸리티 및 핵심 로직 함수
@@ -149,7 +144,7 @@ def reset_wash_status():
     orientation_counters = {"Left": 0, "Right": 0} # 방향 카운터 초기화
     active_scenario_global = 0 # 시나리오 초기화
     last_known_landmarks_prev_frame = {"Left": None, "Right": None} # 이전 랜드마크 초기화
-    # yolo_action_buffer.clear() # 이 줄은 이제 사용하지 않으므로 주석 처리하거나 제거합니다.
+
 
 # (calculate_movement_magnitude 함수는 현재 사용되지 않지만, 필요 시를 위해 남겨둡니다.)
 def calculate_movement_magnitude(current_landmarks, previous_landmarks):
@@ -619,9 +614,7 @@ def main():
         if key == ord('r'): # 'r'을 누르면 세척 상태 리셋
             reset_wash_status()
             frame_counter = 0 # 프레임 카운터 리셋
-            # 버퍼 및 안정화 액션 리셋 로직 제거
-            # yolo_action_buffer.clear() 
-            # stable_yolo_action = -1 
+
 
     # 자원 해제
     cap.release()
