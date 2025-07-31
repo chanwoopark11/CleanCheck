@@ -1,0 +1,658 @@
+import cv2
+import mediapipe as mp
+import numpy as np
+import time
+from ultralytics import YOLO
+
+# =================================================================================
+# 1. 설정 및 상수
+# =================================================================================
+YOLO_MODEL_PATH = r"D:\Download\best (3).pt" # YOLO 모델 파일 경로를 설정하세요.
+CONTACT_TIME_THRESHOLD = 0.2 # 손이 접촉 상태로 유지되어야 하는 최소 시간 (초)
+UNWASHED_COLOR = (0, 0, 255) # 세척되지 않은 랜드마크 색상 (파랑)
+PALM_WASHED_COLOR = (0, 255, 0) # 손바닥 세척 완료 랜드마크 색상 (초록)
+BACK_WASHED_COLOR = (255, 165, 0) # 손등 세척 완료 랜드마크 색상 (주황)
+TEXT_COLOR = (255, 255, 255) # 텍스트 색상 (흰색)
+ORIENTATION_CONFIRM_FRAMES = 5 # 손 방향(손바닥/손등)이 안정적으로 감지되기 위한 프레임 수
+
+# [속도 개선] YOLO 연산을 몇 프레임마다 한 번씩 실행할지 결정합니다. (값이 클수록 빠르지만 반응은 느려짐)
+YOLO_INFERENCE_INTERVAL = 2
+
+# 새로 추가
+MIN_HAND_DISTANCE_THRESHOLD = 80  # 두 손의 중심점 (예: 손목) 간의 최소 거리 임계값 (픽셀)
+                                # 이 값은 실제 환경에서 테스트하여 적절히 조절해야 합니다.
+
+
+# =================================================================================
+# 2. 유틸리티 및 핵심 로직 함수
+# =================================================================================
+
+# MediaPipe Hands 모듈 초기화
+mp_hands = mp.solutions.hands
+
+def estimate_palm_direction(landmarks, label):
+    """
+    주어진 손 랜드마크를 기반으로 손바닥의 방향(카메라를 향하고 있는지)을 추정합니다.
+    이 함수는 손목(0번), 검지 손허리뼈(5번), 새끼손가락 손허리뼈(17번) 랜드마크를 사용하여
+    손바닥의 법선 벡터를 계산하고, 이 법선 벡터의 Z축 성분으로 방향을 판단합니다.
+
+    Args:
+        landmarks (dict): MediaPipe에서 감지한 손 랜드마크의 픽셀 좌표 (예: {0: (x,y), 1:(x,y), ...}).
+        label (str): 현재 손이 'Left'인지 'Right'인지 나타내는 문자열.
+
+    Returns:
+        bool: 손바닥이 카메라를 향하고 있으면 True, 손등이 향하고 있으면 False.
+    """
+    if not landmarks or not (0 in landmarks and 5 in landmarks and 17 in landmarks):
+        # 랜드마크가 불충분하면 기본적으로 손바닥을 향하고 있다고 가정하거나, 상황에 따라 다른 기본값을 반환할 수 있음
+        return True 
+    
+    wrist = np.array(landmarks[0])
+    index_mcp = np.array(landmarks[5])
+    pinky_mcp = np.array(landmarks[17])
+
+    # 2D 좌표에 Z축 성분 0을 추가하여 3D 벡터로 만듭니다. (Z축은 화면 안쪽/바깥쪽을 나타냄)
+    v1 = index_mcp - wrist
+    v2 = pinky_mcp - wrist
+
+    # 외적(cross product)을 사용하여 손바닥의 법선 벡터를 계산합니다.
+    # 오른손 좌표계 규칙을 따릅니다.
+    normal = np.cross(np.append(v1, 0), np.append(v2, 0))
+
+    # 손의 라벨에 따라 법선 벡터의 Z축 성분을 확인하여 손바닥 방향을 추정합니다.
+    # MediaPipe의 오른손 좌표계 특성을 고려합니다.
+    if label == "Left":
+        # 왼손의 경우 법선 벡터의 Z 성분이 음수이면 손바닥이 카메라를 향함 (화면 안쪽으로 뻗어 나가는 법선)
+        return normal[2] < 0 
+    else: # Right hand
+        # 오른손의 경우 법선 벡터의 Z 성분이 양수이면 손바닥이 카메라를 향함 (화면 바깥쪽으로 뻗어 나가는 법선)
+        return normal[2] > 0 
+
+def create_kalman_filter(x, y):
+    """
+    주어진 초기 위치 (x, y)에 대한 2D 칼만 필터를 생성하고 초기화합니다.
+    칼만 필터는 noisy한 측정값으로부터 시스템의 상태를 추정하는 데 사용됩니다.
+    여기서는 손 랜드마크의 위치를 더 부드럽게 추적하는 데 활용됩니다.
+
+    Args:
+        x (int): 초기 X 좌표.
+        y (int): 초기 Y 좌표.
+
+    Returns:
+        cv2.KalmanFilter: 초기화된 칼만 필터 객체.
+    """
+    kf = cv2.KalmanFilter(4, 2) # 상태 벡터 4개 (x, y, vx, vy), 측정 벡터 2개 (x, y)
+    kf.transitionMatrix = np.array([[1, 0, 1, 0],   # x = x + vx
+                                     [0, 1, 0, 1],   # y = y + vy
+                                     [0, 0, 1, 0],   # vx = vx
+                                     [0, 0, 0, 1]], np.float32) # vy = vy
+    kf.measurementMatrix = np.eye(2, 4, dtype=np.float32) # 측정은 (x, y)만 이루어짐
+    kf.processNoiseCov = np.eye(4, dtype=np.float32) * 0.03 # 프로세스 노이즈 공분산 (모델 불확실성)
+    kf.measurementNoiseCov = np.eye(2, dtype=np.float32) * 0.5 # 측정 노이즈 공분산 (센서 불확실성)
+    kf.statePost = np.array([[x], [y], [0], [0]], dtype=np.float32) # 초기 상태 (x, y, vx=0, vy=0)
+    return kf
+
+def update_kalman_filters(kalman_dict, detection):
+    """
+    주어진 감지된 랜드마크 데이터로 칼만 필터를 업데이트하고 예측된 위치를 반환합니다.
+
+    Args:
+        kalman_dict (dict): 각 랜드마크 인덱스에 매핑된 칼만 필터 객체들의 딕셔너리.
+        detection (dict): 현재 프레임에서 감지된 랜드마크의 픽셀 좌표 (예: {0: (x,y), 1:(x,y), ...}).
+
+    Returns:
+        dict: 칼만 필터에 의해 예측된 각 랜드마크의 부드러운 픽셀 좌표.
+    """
+    predicted = {}
+    if detection:
+        for idx, (cx, cy) in detection.items():
+            if idx not in kalman_dict:
+                # 새로운 랜드마크가 감지되면 해당 랜드마크에 대한 칼만 필터 생성
+                kalman_dict[idx] = create_kalman_filter(cx, cy)
+            
+            kf = kalman_dict[idx]
+            kf.predict() # 다음 상태 예측
+            kf.correct(np.array([[np.float32(cx)], [np.float32(cy)]])) # 측정값으로 보정
+            
+            predicted[idx] = (int(kf.statePost[0]), int(kf.statePost[1])) # 보정된 상태에서 위치 추출
+    return predicted
+
+# =================================================================================
+# 3. 전역 상태 변수들 (애플리케이션 전반에 걸쳐 유지되는 데이터)
+# =================================================================================
+cleansed_state = {} # 각 손의 랜드마크별 세척 완료 상태 (True/False)
+contact_timers = {} # 각 손의 랜드마크별 접촉 시작 시간 (세척 시간 계산용)
+stable_orientations = {} # 각 손의 안정적인 방향 (손바닥/손등)
+orientation_counters = {} # 손 방향이 변경된 후 안정화될 때까지의 카운터
+active_scenario_global = 0 # 현재 활성화된 손 씻기 시나리오 (0: 미감지, 1: YOLO 감지, 2: MediaPipe 손바닥 위주, 3: MediaPipe 손등 위주)
+
+last_known_landmarks_prev_frame = {"Left": None, "Right": None} # 이전 프레임의 랜드마크 (움직임 계산용)
+
+def reset_wash_status():
+    """
+    모든 손 씻기 관련 상태 변수들을 초기화합니다.
+    새로운 손 씻기 세션을 시작하거나 'r' 키가 눌렸을 때 호출됩니다.
+    """
+    global cleansed_state, contact_timers, stable_orientations, orientation_counters, active_scenario_global, last_known_landmarks_prev_frame 
+    cleansed_state = {
+        "Left": {"palm": [False]*21, "back": [False]*21},
+        "Right": {"palm": [False]*21, "back": [False]*21}
+    }
+    contact_timers = {
+        "Left": {"palm": [0]*21, "back": [0]*21},
+        "Right": {"palm": [0]*21, "back": [0]*21}
+    }
+    stable_orientations = {"Left": "palm", "Right": "palm"} # 초기 손 방향 기본값 설정
+    orientation_counters = {"Left": 0, "Right": 0} # 방향 카운터 초기화
+    active_scenario_global = 0 # 시나리오 초기화
+    last_known_landmarks_prev_frame = {"Left": None, "Right": None} # 이전 랜드마크 초기화
+
+
+def calculate_movement_magnitude(current_landmarks, previous_landmarks):
+    """
+    현재 프레임과 이전 프레임의 랜드마크를 비교하여 손의 움직임 크기를 계산합니다.
+    각 랜드마크의 이동 거리 합계를 반환합니다.
+
+    Args:
+        current_landmarks (dict): 현재 프레임의 랜드마크 픽셀 좌표.
+        previous_landmarks (dict): 이전 프레임의 랜드마크 픽셀 좌표.
+
+    Returns:
+        float: 모든 랜드마크의 총 이동 거리 합계.
+    """
+    if not current_landmarks or not previous_landmarks:
+        return 0.0
+    
+    total_movement = 0.0
+    for idx in current_landmarks:
+        if idx in previous_landmarks:
+            curr_x, curr_y = current_landmarks[idx]
+            prev_x, prev_y = previous_landmarks[idx]
+            total_movement += np.sqrt((curr_x - prev_x)**2 + (curr_y - prev_y)**2)
+    return total_movement
+
+
+def update_cleansed_status(pred_left, pred_right, facing_left_is_palm, facing_right_is_palm, current_action):
+    """
+    손의 랜드마크와 방향, 그리고 YOLO 감지 결과를 바탕으로 손의 세척 상태를 업데이트합니다.
+    다양한 손 씻기 시나리오를 처리합니다.
+
+    Args:
+        pred_left (dict): 칼만 필터링된 왼손 랜드마크 픽셀 좌표.
+        pred_right (dict): 칼만 필터링된 오른손 랜드마크 픽셀 좌표.
+        facing_left_is_palm (bool): 왼손이 손바닥을 향하고 있는지 여부.
+        facing_right_is_palm (bool): 오른손이 손바닥을 향하고 있는지 여부.
+        current_action (int): YOLO 모델이 현재 감지한 손 씻기 동작 클래스 ID.
+                                (0: 손바닥 비비기, 2: 손등 비비기, -1: 미감지 또는 기타)
+    """
+    global active_scenario_global, last_known_landmarks_prev_frame
+    now = time.time()
+    
+    # -------------------------------------------------------------------------
+    # 1. 두 손 중 하나라도 감지되지 않았을 경우 초기화
+    # -------------------------------------------------------------------------
+    if not pred_left or not pred_right:
+        # 모든 손 랜드마크의 접촉 타이머를 0으로 리셋합니다.
+        for i in range(21):
+            for hand in ["Left", "Right"]:
+                for side in ["palm", "back"]: contact_timers[hand][side][i] = 0
+        # 현재 활성 시나리오를 '0' (미감지)으로 설정합니다.
+        active_scenario_global = 0
+        # 이전 프레임의 랜드마크 정보를 현재 상태로 업데이트합니다.
+        last_known_landmarks_prev_frame["Left"] = pred_left
+        last_known_landmarks_prev_frame["Right"] = pred_right
+        return # 함수 종료
+
+    # -------------------------------------------------------------------------
+    # **새로 추가: 두 손 간의 거리 체크(손목 좌표 이용)**
+    # -------------------------------------------------------------------------
+    # 손목 랜드마크(0번)를 사용하여 두 손의 중심점 간 거리 계산
+    if 0 in pred_left and 0 in pred_right:
+        left_wrist = np.array(pred_left[0])
+        right_wrist = np.array(pred_right[0])
+        distance = np.linalg.norm(left_wrist - right_wrist)
+        
+        # 만약 두 손이 너무 가까이 있다면, 세척 로직을 일시 중단하고 타이머를 리셋
+        if distance < MIN_HAND_DISTANCE_THRESHOLD:
+            for i in range(21):
+                for hand in ["Left", "Right"]:
+                    for side in ["palm", "back"]: contact_timers[hand][side][i] = 0
+            # active_scenario_global은 유지할 수 있지만, 세척은 진행되지 않도록 합니다.
+            # 이 경우에도 시각적으로 혼란을 줄이기 위해 active_scenario_global을 0으로 설정하는 것을 고려할 수 있습니다.
+            # active_scenario_global = 0 # 선택 사항: 너무 가까우면 시나리오도 초기화
+            last_known_landmarks_prev_frame["Left"] = pred_left
+            last_known_landmarks_prev_frame["Right"] = pred_right
+            return # 함수 종료
+    else:
+        # 손목 랜드마크가 하나라도 없으면 거리 측정이 불가능하므로, 이 경우에도 세척 로직을 진행하지 않습니다.
+        for i in range(21):
+            for hand in ["Left", "Right"]:
+                for side in ["palm", "back"]: contact_timers[hand][side][i] = 0
+        active_scenario_global = 0 
+        last_known_landmarks_prev_frame["Left"] = pred_left
+        last_known_landmarks_prev_frame["Right"] = pred_right
+        return # 함수 종료
+
+
+    # -------------------------------------------------------------------------
+    # 2. 손의 Convex Hull (볼록 껍질) 계산
+    # -------------------------------------------------------------------------
+    # 랜드마크 좌표를 NumPy 배열로 변환하여 Convex Hull 계산에 사용합니다.
+    left_points = np.array(list(pred_left.values()), dtype=np.int32)
+    right_points = np.array(list(pred_right.values()), dtype=np.int32)
+    # 각 손의 볼록 껍질을 계산합니다. (최소 3개 이상의 점이 있어야 함)
+    left_hull = cv2.convexHull(left_points) if len(left_points) >= 3 else None
+    right_hull = cv2.convexHull(right_points) if len(right_points) >= 3 else None
+    
+    # -------------------------------------------------------------------------
+    # 3. Convex Hull 계산 실패 시 초기화
+    # -------------------------------------------------------------------------
+    # 볼록 껍질 계산에 실패한 경우 (예: 점이 부족하거나 오류 발생) 타이머를 리셋합니다.
+    if left_hull is None or right_hull is None: 
+        for i in range(21):
+            for hand in ["Left", "Right"]:
+                for side in ["palm", "back"]: contact_timers[hand][side][i] = 0
+        active_scenario_global = 0
+        last_known_landmarks_prev_frame["Left"] = pred_left
+        last_known_landmarks_prev_frame["Right"] = pred_right
+        return # 함수 종료
+
+    # -------------------------------------------------------------------------
+    # 4. YOLO 감지 결과에 따른 시나리오 처리
+    # -------------------------------------------------------------------------
+    if current_action == 0 or current_action == 2:
+        # 시나리오 1: YOLO가 '손바닥 비비기' (0) 또는 '손등 비비기' (2)를 직접 감지한 경우
+        active_scenario_global = 1 # 시나리오 1 활성화
+
+        # 왼손 랜드마크 처리 (오른손 볼록 껍질과의 접촉 확인)
+        for i, point_left in pred_left.items():
+            is_in_contact = cv2.pointPolygonTest(right_hull, point_left, False) >= 0
+            if is_in_contact:
+                # 접촉 중일 때 손바닥 타이머를 시작/갱신합니다.
+                if contact_timers["Left"]["palm"][i] == 0: contact_timers["Left"]["palm"][i] = now
+                contact_timers["Left"]["back"][i] = 0 # 손등 타이머는 리셋 (이 시나리오에서는 손바닥만 중요)
+                # 일정 시간 이상 접촉하면 손바닥 랜드마크를 세척된 것으로 표시합니다.
+                if now - contact_timers["Left"]["palm"][i] > CONTACT_TIME_THRESHOLD: 
+                    cleansed_state["Left"]["palm"][i] = True
+            else: 
+                # 접촉이 없으면 양쪽 타이머를 리셋합니다.
+                contact_timers["Left"]["palm"][i] = 0
+                contact_timers["Left"]["back"][i] = 0
+
+        # 오른손 랜드마크 처리 (왼손 볼록 껍질과의 접촉 확인)
+        for i, point_right in pred_right.items():
+            is_in_contact = cv2.pointPolygonTest(left_hull, point_right, False) >= 0
+            if is_in_contact:
+                # 접촉 중일 때 손바닥 타이머를 시작/갱신합니다.
+                if contact_timers["Right"]["palm"][i] == 0: contact_timers["Right"]["palm"][i] = now
+                contact_timers["Right"]["back"][i] = 0 # 손등 타이머는 리셋
+                # 일정 시간 이상 접촉하면 손바닥 랜드마크를 세척된 것으로 표시합니다.
+                if now - contact_timers["Right"]["palm"][i] > CONTACT_TIME_THRESHOLD: 
+                    cleansed_state["Right"]["palm"][i] = True
+            else: 
+                # 접촉이 없으면 양쪽 타이머를 리셋합니다.
+                contact_timers["Right"]["palm"][i] = 0
+                contact_timers["Right"]["back"][i] = 0
+
+    # -------------------------------------------------------------------------
+    # 5. YOLO가 특정 동작을 감지하지 못했지만 MediaPipe가 손을 감지한 경우 (-1)
+    # -------------------------------------------------------------------------
+    elif current_action == -1 and pred_left and pred_right:
+        # 시나리오 2: 한 손은 손바닥을, 다른 한 손은 손등을 향하고 있는 경우 (예: 왼손 손바닥, 오른손 손등 또는 그 반대)
+        if (facing_left_is_palm and not facing_right_is_palm) or \
+           (not facing_left_is_palm and facing_right_is_palm):
+            active_scenario_global = 2 # 시나리오 2 활성화
+            
+            # 이 시나리오에서는 손의 실제 방향과 관계없이 '손바닥만' 세척 대상으로 간주합니다.
+            
+            # 왼손 랜드마크 처리
+            for i, point_left in pred_left.items():
+                is_in_contact = cv2.pointPolygonTest(right_hull, point_left, False) >= 0
+                if is_in_contact:
+                    # 왼손 접촉 시 항상 손바닥 세척 시도
+                    if contact_timers["Left"]["palm"][i] == 0: contact_timers["Left"]["palm"][i] = now
+                    contact_timers["Left"]["back"][i] = 0 # 손등 타이머는 항상 리셋
+                    if now - contact_timers["Left"]["palm"][i] > CONTACT_TIME_THRESHOLD: 
+                        cleansed_state["Left"]["palm"][i] = True
+                else: 
+                    contact_timers["Left"]["palm"][i] = 0
+                    contact_timers["Left"]["back"][i] = 0
+
+            # 오른손 랜드마크 처리
+            for i, point_right in pred_right.items():
+                is_in_contact = cv2.pointPolygonTest(left_hull, point_right, False) >= 0
+                if is_in_contact:
+                    # 오른손 접촉 시 항상 손바닥 세척 시도
+                    if contact_timers["Right"]["palm"][i] == 0: contact_timers["Right"]["palm"][i] = now
+                    contact_timers["Right"]["back"][i] = 0 # 손등 타이머는 항상 리셋
+                    if now - contact_timers["Right"]["palm"][i] > CONTACT_TIME_THRESHOLD: 
+                        cleansed_state["Right"]["palm"][i] = True
+                else: 
+                    contact_timers["Right"]["palm"][i] = 0
+                    contact_timers["Right"]["back"][i] = 0
+        
+        # 시나리오 3: 양손이 모두 손등으로 감지된 경우
+        elif not facing_left_is_palm and not facing_right_is_palm: 
+            active_scenario_global = 3 # 시나리오 3 활성화
+            
+            # 이 시나리오에서는 양손 모두 '손등만' 세척 대상으로 간주합니다.
+            
+            # 왼손 랜드마크 처리
+            for i, point_left in pred_left.items():
+                is_in_contact = cv2.pointPolygonTest(right_hull, point_left, False) >= 0
+                if is_in_contact:
+                    # 왼손 접촉 시 항상 손등 세척 시도
+                    if contact_timers["Left"]["back"][i] == 0: contact_timers["Left"]["back"][i] = now
+                    contact_timers["Left"]["palm"][i] = 0 # 손바닥 타이머는 항상 리셋
+                    if now - contact_timers["Left"]["back"][i] > CONTACT_TIME_THRESHOLD: 
+                        cleansed_state["Left"]["back"][i] = True
+                else: 
+                    contact_timers["Left"]["palm"][i] = 0
+                    contact_timers["Left"]["back"][i] = 0
+            
+            # 오른손 랜드마크 처리
+            for i, point_right in pred_right.items():
+                is_in_contact = cv2.pointPolygonTest(left_hull, point_right, False) >= 0
+                if is_in_contact:
+                    # 오른손 접촉 시 항상 손등 세척 시도
+                    if contact_timers["Right"]["back"][i] == 0: contact_timers["Right"]["back"][i] = now
+                    contact_timers["Right"]["palm"][i] = 0 # 손바닥 타이머는 항상 리셋
+                    if now - contact_timers["Right"]["back"][i] > CONTACT_TIME_THRESHOLD: 
+                        cleansed_state["Right"]["back"][i] = True
+                else: 
+                    contact_timers["Right"]["palm"][i] = 0
+                    contact_timers["Right"]["back"][i] = 0
+        else: # MediaPipe가 손을 감지했지만 위 두 시나리오 조건에 맞지 않는 경우
+              # (예: 양손 모두 손바닥을 향하고 있는 경우)
+            active_scenario_global = 3 # 이 경우 시나리오 3으로 처리하고 타이머를 리셋하여 특별한 세척 동작은 인식하지 않습니다.
+            for i in range(21):
+                for hand in ["Left", "Right"]:
+                    for side in ["palm", "back"]: contact_timers[hand][side][i] = 0
+    # -------------------------------------------------------------------------
+    # 6. 기타 경우 (YOLO가 0, 2 외의 다른 클래스를 감지했거나, 한 손만 감지 등)
+    # -------------------------------------------------------------------------
+    else: 
+        active_scenario_global = 3 # 이 경우도 시나리오 3으로 처리하고 모든 타이머를 리셋합니다.
+        for i in range(21):
+            for hand in ["Left", "Right"]:
+                for side in ["palm", "back"]: contact_timers[hand][side][i] = 0
+    
+    # -------------------------------------------------------------------------
+    # 7. 마지막으로 알려진 랜드마크 정보 업데이트
+    # -------------------------------------------------------------------------
+    # 다음 프레임에서의 움직임 계산을 위해 현재 랜드마크 정보를 저장합니다.
+    last_known_landmarks_prev_frame["Left"] = pred_left
+    last_known_landmarks_prev_frame["Right"] = pred_right
+
+def draw_hand_visuals(image, landmarks, label, is_palm):
+    """
+    프레임에 손 랜드마크와 세척 상태를 시각화하여 그립니다.
+    세척된 부분은 색상으로 표시하고, 손바닥/손등 방향 텍스트를 추가합니다.
+
+    Args:
+        image (np.array): 그릴 대상 이미지 (프레임).
+        landmarks (dict): 손 랜드마크 픽셀 좌표.
+        label (str): 손의 라벨 ("Left" 또는 "Right").
+        is_palm (bool): 현재 손바닥이 카메라를 향하고 있는지 여부.
+    """
+    if not landmarks:
+        return
+
+    overlay = image.copy()
+    hull_points = [landmarks[i] for i in range(21) if i in landmarks]
+    side = "palm" if is_palm else "back" 
+
+    if len(hull_points) > 2:
+        hull = cv2.convexHull(np.array(hull_points, dtype=np.int32))
+        
+        if label in cleansed_state and side in cleansed_state[label]:
+            # 세척된 랜드마크 개수를 세어 진행률에 따라 손 영역 색칠
+            washed_count = sum(1 for i in range(21) if cleansed_state[label][side][i])
+            wash_ratio = washed_count / 21
+            if wash_ratio > 0.1: # 일정 비율 이상 세척되었을 때만 색상 적용
+                color = PALM_WASHED_COLOR if is_palm else BACK_WASHED_COLOR
+                alpha = min(0.1 + wash_ratio * 0.6, 0.7) # 세척 비율에 따라 투명도 조절
+                cv2.fillConvexPoly(overlay, hull, color)
+                cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0, image)
+
+    # 개별 랜드마크 세척 상태 시각화
+    if label in cleansed_state and side in cleansed_state[label]:
+        for i, point in landmarks.items():
+            color = (PALM_WASHED_COLOR if is_palm else BACK_WASHED_COLOR) if cleansed_state[label][side][i] else UNWASHED_COLOR
+            cv2.circle(image, point, 8, color, -1) # 랜드마크 점 채우기
+            cv2.circle(image, point, 8, (0, 0, 0), 1) # 랜드마크 점 테두리
+
+    # 손의 라벨과 방향 텍스트 표시
+    if 0 in landmarks: # 손목 랜드마크(0번)를 기준으로 텍스트 위치 설정
+        label_text = f"{label} - {side.capitalize()}"
+        cv2.putText(image, label_text, (landmarks[0][0] - 50, landmarks[0][1] + 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, TEXT_COLOR, 2)
+
+def draw_progress_bar(image, current_action_from_yolo): 
+    """
+    화면 상단에 전체 손 씻기 진행률 바와 하단에 현재 감지된 시나리오 정보를 표시합니다.
+
+    Args:
+        image (np.array): 그릴 대상 이미지 (프레임).
+        current_action_from_yolo (int): YOLO가 현재 감지한 동작 클래스 ID.
+                                        (버퍼링을 거치지 않은 원시 액션 값)
+    """
+    global active_scenario_global 
+    
+    # 전체 랜드마크 개수 (양손 손바닥 21 + 양손 손등 21 = 42, 각 랜드마크는 palm/back 2개 상태 = 84)
+    total_points = 21 * 2 * 2 # 21 랜드마크 * 2 손 * 2 면 (손바닥/손등)
+    # 현재 세척된 랜드마크 개수 합산
+    washed_points = sum(sum(cleansed_state[hand][side]) for hand in cleansed_state for side in cleansed_state[hand])
+    
+    progress = washed_points / total_points if total_points > 0 else 0 # 진행률 계산
+    bar_width = int((image.shape[1] - 40) * progress) # 진행률 바 너비 계산
+    
+    # 진행률 바 배경 그리기
+    cv2.rectangle(image, (20, 20), (image.shape[1] - 20, 50), (100, 100, 100), -1) 
+    # 진행률 바 채우기
+    if bar_width > 0: 
+        cv2.rectangle(image, (20, 20), (20 + bar_width, 50), (0, 255, 127), -1) # 밝은 초록색
+    
+    # 진행률 텍스트 표시
+    cv2.putText(image, f"Wash Progress: {progress:.0%}", (30, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.7, TEXT_COLOR, 2)
+    # 리셋 안내 텍스트
+    cv2.putText(image, "Press 'r' to Reset", (image.shape[1] - 180, image.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    
+    # 현재 활성 시나리오 정보 텍스트 표시
+    action_text = "Action: N/A" # 기본값
+
+    if active_scenario_global == 1:
+        action_text = "Action: Scenario 1 (YOLO Detected)"
+    elif active_scenario_global == 2:
+        action_text = "Action: Scenario 2 (Palm-dominant Scrub)" 
+    elif active_scenario_global == 3:
+        action_text = "Action: Scenario 3 (Back-of-Hand Scrub)" 
+    
+    # YOLO가 감지한 동작 클래스 ID 추가 정보 (디버깅용)
+    if current_action_from_yolo != -1:
+        action_text += f" (YOLO Class: {current_action_from_yolo})"
+
+    cv2.putText(image, action_text, (20, image.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+# =================================================================================
+# 4. 메인 애플리케이션 실행 함수
+# =================================================================================
+def main():
+    """
+    주요 애플리케이션 실행 함수.
+    카메라를 열고, YOLO 및 MediaPipe를 사용하여 손과 동작을 감지하고, 세척 상태를 시각화합니다.
+    """
+    try:
+        # YOLO 모델 로드
+        model = YOLO(YOLO_MODEL_PATH)
+    except Exception as e:
+        print(f"Error loading YOLO model: {e}")
+        print(f"Please check if the model path '{YOLO_MODEL_PATH}' is correct and 'ultralytics' is installed.")
+        return
+
+    # MediaPipe Hands 모델 초기화
+    hands = mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+    
+    # 웹캠 열기
+    cap = cv2.VideoCapture(0) # 0은 기본 웹캠을 의미합니다. 다른 카메라를 사용하려면 번호를 변경하세요.
+    
+    # 칼만 필터 딕셔너리 초기화
+    kalman_left, kalman_right = {}, {}
+    # 이전 프레임의 마지막으로 알려진 랜드마크 초기화
+    last_known_landmarks = {"Left": None, "Right": None}
+    
+    # 손 씻기 상태 초기화
+    reset_wash_status() # 상태 변수 초기화
+
+    frame_counter = 0 # 프레임 카운터 (YOLO 추론 주기 제어용)
+    current_detected_action = -1 # YOLO에서 현재 프레임에서 감지한 동작 클래스 ID
+
+    while cap.isOpened():
+        ret, frame = cap.read() # 프레임 읽기
+        if not ret: # 프레임을 제대로 읽지 못하면 종료
+            break
+        
+        frame = cv2.flip(frame, 1) # 좌우 반전 (거울 모드)
+        image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB) # MediaPipe는 RGB 이미지를 사용
+
+        h, w, _ = frame.shape # 프레임의 높이, 너비, 채널 수
+
+        # YOLO 추론 주기 제어: YOLO_INFERENCE_INTERVAL에 따라 특정 프레임에서만 YOLO 실행
+        if frame_counter % YOLO_INFERENCE_INTERVAL == 0:
+            yolo_results = model(frame, verbose=False) # YOLO 모델 추론 (verbose=False로 출력 억제)
+            
+            action_this_frame = -1 # 이번 프레임의 YOLO 감지 액션 초기화
+            if yolo_results and yolo_results[0].boxes: # 결과가 있고 박스가 감지된 경우
+                # 변경된 부분: boxes 객체에서 xyxy, conf, cls를 직접 추출
+                # xyxy는 numpy 배열, conf와 cls는 torch 텐서일 수 있으므로 .cpu().numpy() 적용
+                detected_boxes_xyxy = yolo_results[0].boxes.xyxy.cpu().numpy()
+                detected_confs = yolo_results[0].boxes.conf.cpu().numpy()
+                detected_classes = yolo_results[0].boxes.cls.cpu().numpy()
+                
+                # 감지된 박스들을 하나의 리스트로 통합하여 처리하기 쉽게 만듭니다.
+                # 각 요소는 (x1, y1, x2, y2, conf, cls) 튜플 형태가 됩니다.
+                all_detections = []
+                for i in range(len(detected_boxes_xyxy)):
+                    x1, y1, x2, y2 = detected_boxes_xyxy[i]
+                    conf = detected_confs[i]
+                    cls = detected_classes[i]
+                    all_detections.append((x1, y1, x2, y2, conf, cls))
+                
+                # 우선순위 클래스 정의 (0번과 2번)
+                priority_classes = {0, 2}
+                
+                # 0번 또는 2번 클래스 중 가장 높은 신뢰도를 가진 박스 찾기
+                best_priority_detection = None
+                for detection_data in all_detections:
+                    # 이제 detection_data는 (x1, y1, x2, y2, conf, cls) 튜플입니다.
+                    cls = int(detection_data[5]) # 클래스 ID
+                    conf = detection_data[4]     # 신뢰도
+                    
+                    if cls in priority_classes:
+                        if best_priority_detection is None or conf > best_priority_detection[4]:
+                            best_priority_detection = detection_data
+                
+                # 우선순위 클래스 (0번 또는 2번)가 감지되었다면 해당 클래스를 선택
+                if best_priority_detection is not None:
+                    action_this_frame = int(best_priority_detection[5])
+                else:
+                    # 우선순위 클래스가 감지되지 않았다면, 나머지 클래스 중 가장 높은 신뢰도의 박스 선택
+                    if len(all_detections) > 0:
+                        # 신뢰도 기준으로 정렬 (내림차순)
+                        sorted_detections = sorted(all_detections, key=lambda d: d[4], reverse=True)
+                        action_this_frame = int(sorted_detections[0][5])
+            
+            # YOLO가 감지한 원시 액션을 current_detected_action에 직접 할당
+            current_detected_action = action_this_frame 
+
+
+        # MediaPipe Hands 모델 처리
+        hands_results = hands.process(image_rgb)
+        
+        temp_detected_hands_raw = []
+        if hands_results.multi_hand_landmarks:
+            for i, hand_landmarks_raw in enumerate(hands_results.multi_hand_landmarks):
+                original_label = hands_results.multi_handedness[i].classification[0].label
+                # 랜드마크 좌표를 픽셀 단위로 변환
+                landmarks_pixel = {idx: (int(lm.x * w), int(lm.y * h)) for idx, lm in enumerate(hand_landmarks_raw.landmark)}
+                
+                # 손의 위치를 기준으로 왼손/오른손을 구분하기 위한 손목 X 좌표
+                wrist_x = landmarks_pixel[0][0] if 0 in landmarks_pixel else w / 2 
+                
+                temp_detected_hands_raw.append({'label': original_label, 'landmarks': landmarks_pixel, 'wrist_x': wrist_x, 'hand_obj': hand_landmarks_raw})
+        
+        # 감지된 손을 'Left'와 'Right'로 정렬
+        detected_hands = {"Left": None, "Right": None}
+        if len(temp_detected_hands_raw) == 2:
+            # 손목 X 좌표를 비교하여 왼손/오른손 구분 (왼손은 보통 X좌표가 작음)
+            if temp_detected_hands_raw[0]['wrist_x'] < temp_detected_hands_raw[1]['wrist_x']:
+                detected_hands["Left"] = temp_detected_hands_raw[0]['landmarks']
+                detected_hands["Right"] = temp_detected_hands_raw[1]['landmarks']
+            else:
+                detected_hands["Left"] = temp_detected_hands_raw[1]['landmarks']
+                detected_hands["Right"] = temp_detected_hands_raw[0]['landmarks']
+        elif len(temp_detected_hands_raw) == 1:
+            # 한 손만 감지된 경우 해당 라벨로 할당
+            label = temp_detected_hands_raw[0]['label']
+            detected_hands[label] = temp_detected_hands_raw[0]['landmarks']
+        
+        # 각 손의 방향 (손바닥/손등) 추정 및 안정화
+        for label, landmarks in detected_hands.items():
+            if landmarks:
+                raw_orientation_is_palm = estimate_palm_direction(landmarks, label)
+                is_stable_palm = (stable_orientations[label] == "palm")
+                
+                if raw_orientation_is_palm == is_stable_palm: 
+                    orientation_counters[label] = 0 # 방향이 안정적이면 카운터 리셋
+                else: 
+                    orientation_counters[label] += 1 # 방향이 바뀌면 카운터 증가
+                
+                # 일정 프레임 이상 같은 방향이 유지되면 안정적인 방향으로 확정
+                if orientation_counters[label] > ORIENTATION_CONFIRM_FRAMES:
+                    stable_orientations[label] = "palm" if raw_orientation_is_palm else "back"
+                    orientation_counters[label] = 0 # 확정 후 카운터 리셋
+
+        # 칼만 필터를 사용하여 랜드마크 위치 부드럽게 만들기 (예측)
+        predicted_left = update_kalman_filters(kalman_left, detected_hands["Left"])
+        predicted_right = update_kalman_filters(kalman_right, detected_hands["Right"])
+        
+        # 칼만 필터가 예측한 랜드마크가 있으면 마지막으로 알려진 랜드마크 업데이트
+        if predicted_left: last_known_landmarks["Left"] = predicted_left
+        if predicted_right: last_known_landmarks["Right"] = predicted_right
+        
+        # 최종적으로 확정된 손 방향
+        final_facing_left = (stable_orientations["Left"] == "palm")
+        final_facing_right = (stable_orientations["Right"] == "palm")
+
+        # 손의 세척 상태 업데이트 (YOLO 원시 액션 전달)
+        update_cleansed_status(last_known_landmarks["Left"], last_known_landmarks["Right"], 
+                               final_facing_left, final_facing_right, current_detected_action) # current_detected_action 전달
+
+        # 손 랜드마크 및 세척 상태 시각화
+        draw_hand_visuals(frame, last_known_landmarks["Left"], "Left", final_facing_left)
+        draw_hand_visuals(frame, last_known_landmarks["Right"], "Right", final_facing_right)
+        
+        # 진행률 바 및 시나리오 정보 표시 (YOLO 원시 액션 전달)
+        draw_progress_bar(frame, current_detected_action) # current_detected_action 전달
+
+        # 화면에 프레임 표시
+        cv2.imshow("Hand Wash Visualizer (Optimized)", frame)
+
+        frame_counter += 1 # 프레임 카운터 증가
+
+        # 키 입력 처리
+        key = cv2.waitKey(5) & 0xFF
+        if key == ord('q'): # 'q'를 누르면 종료
+            break
+        if key == ord('r'): # 'r'을 누르면 세척 상태 리셋
+            reset_wash_status()
+            frame_counter = 0 # 프레임 카운터 리셋
+
+
+    # 자원 해제
+    cap.release()
+    hands.close()
+    cv2.destroyAllWindows()
+
+# 스크립트 직접 실행 시 main 함수 호출
+if __name__ == '__main__':
+    main()
