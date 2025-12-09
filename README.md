@@ -19,7 +19,8 @@
 
 ## 🌐 CleanCheck
 
-[cleancheck.org](https://cleancheck.org) (Demo)
+[cleancheck.org](https://cleancheck.org) (HomePage)
+[![Clean Check DEMO](https://img.youtube.com/vi/GN2RJRM0xCs/0.jpg)](https://www.youtube.com/watch?v=GN2RJRM0xCs)
 
 > **깨끗한 손, 안전한 일상 – CleanCheck가 함께합니다.**
 
