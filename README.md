@@ -1,5 +1,13 @@
 # 🧼 CleanCheck: 핸드 제스쳐 인식 기반 손씻은 영역 시각화 시스템
 
+## 🙏 연구비 지원 (Acknowledgements)
+> 이 프로젝트는 2025년도 정부(과학기술정보통신부)의 재원으로  
+> 정보통신기획평가원(IITP)의 지원을 받아 수행된 연구임  
+> (No.RS-2022-00155857, 인공지능융합혁신인재양성(충남대학교))  
+>
+> This project was supported by the Institute of Information & Communications Technology Planning & Evaluation (IITP) grant funded by the Korean government (MSIT) (No.RS-2022-00155857, AI Convergence Innovation Talent Training Program at Chungnam National University).
+
+
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue?logo=python)](https://www.python.org/)
 [![YOLOv8](https://img.shields.io/badge/YOLO-v8-orange)](https://github.com/ultralytics/ultralytics)
 [![MediaPipe](https://img.shields.io/badge/MediaPipe-0.10-brightgreen)](https://mediapipe.dev/)
