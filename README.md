@@ -157,6 +157,3 @@ CleanCheck 프로젝트에 기여하고 싶으신가요? Pull Request와 Issue�
 -----
 
 Copyright © 2025 CleanCheck Team. All Rights Reserved.
-
-```
-
