@@ -151,8 +151,8 @@ CleanCheck 프로젝트에 기여하고 싶으신가요? Pull Request와 Issue�
 | **프로젝트 매니저** | **주다빈** | [programbins@gmail.com](mailto:programbins@gmail.com) | 충남대학교 컴퓨터융합학부 |
 | **AI CV 모델링** | **최민서** | [msc503@naver.com](mailto:msc503@naver.com) | 충남대학교 컴퓨터융합학부 |
 | **데이터 수집·검증** | **박찬우** | [pcw22600@gmail.com](mailto:pcw22600@gmail.com) | 충남대학교 컴퓨터융합학부 |
-| **프로젝트 지도** | **김재정 교수** | [jjkim@cnu.ac.kr](mailto:jjkim@cnu.ac.kr) | 충남대학교 / 바이오AI융합연구센터 |
 | **실험 및 검증** | **민영순** | [zhzhxh@cnuh.co.kr](mailto:zhzhxh@cnuh.co.kr) | 충남대학교병원 |
+| **프로젝트 지도** | **김재정 교수** | [jjkim@cnu.ac.kr](mailto:jjkim@cnu.ac.kr) | 충남대학교 / 바이오AI융합연구센터 |
 
 -----
 
