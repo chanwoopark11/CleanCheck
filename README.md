@@ -1,7 +1,7 @@
 # 🧼 CleanCheck: 핸드 제스쳐 인식 기반 손 위생 커버리지 시각화 시스템
 
 ## Acknowledgement
-> 이 프로젝트는 2025년도 정부(과학기술정보통신부)의 재원으로 정보통신기획평가원(IITP)의 지원을 받아 수행된 연구임
+> 이 프로젝트는 2025년도 정부(과학기술정보통신부)의 재원으로 정보통신기획평가원의 지원을 받아 수행된 연구임
 > (No.RS-2022-00155857, 인공지능융합혁신인재양성(충남대학교))
 >
 > This project was supported by the Institute of Information & Communications Technology Planning & Evaluation (IITP) grant funded by the Korean government (MSIT) (No.RS-2022-00155857, AI Convergence Innovation Talent Training Program at Chungnam National University).
